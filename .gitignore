@@ -1,3 +1,6 @@
+*.pickle
+photos_api_secret.json
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
