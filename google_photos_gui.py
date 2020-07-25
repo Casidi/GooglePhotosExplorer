@@ -1,12 +1,17 @@
 import os, time
+import threading
 import wx
 from wx.lib.agw import ultimatelistctrl as ULC
 import mygoogle as mg
-import threading
 
+##TODO: clear all threads when closing
 class MainWin(wx.Frame):
     def __init__(self, parent, title):
-        super(MainWin, self).__init__(parent, title=title, size=(700, 300))
+        super(MainWin, self).__init__(parent, title=title, size=(700, 400))
+
+        self.statusbar = self.CreateStatusBar(1)
+        self.statusbar.SetStatusText('Ready')
+
         panel = wx.Panel(self)
         hbox = wx.BoxSizer(wx.HORIZONTAL)
         top_vbox = wx.BoxSizer(wx.VERTICAL)
@@ -19,9 +24,6 @@ class MainWin(wx.Frame):
         self.remote_list = wx.ListCtrl(panel, -1, style=wx.LC_REPORT)
         self.remote_list.InsertColumn(0, 'Album')
         self.remote_list.InsertColumn(1, '# photos', wx.LIST_FORMAT_RIGHT)
-
-        # self.service = mg.Create_Service(mg.CLIENT_SECRET_FILE, mg.API_NAME, mg.API_VERSION, mg.SCOPES)
-        # self.sync_from_remote()
 
         self.to_remote = wx.Button(panel, wx.ID_ANY, '>>')
         self.to_local = wx.Button(panel, wx.ID_ANY, '<<')
@@ -37,8 +39,11 @@ class MainWin(wx.Frame):
         left_vbox.Add(self.select_local_dir, 0, wx.EXPAND)
         left_vbox.Add(self.local_list, 1, wx.EXPAND)
 
-        self.log = wx.TextCtrl(panel, wx.ID_ANY, style=wx.TE_MULTILINE | wx.TE_READONLY | wx.HSCROLL)
-        wx.Log.SetActiveTarget(wx.LogTextCtrl(self.log))
+        self.connect_remote_btn = wx.Button(panel, wx.ID_ANY, 'Connect')
+        self.connect_remote_btn.Bind(wx.EVT_BUTTON, self.on_connect_remote)
+        right_vbox = wx.BoxSizer(wx.VERTICAL)
+        right_vbox.Add(self.connect_remote_btn, 0, wx.EXPAND)
+        right_vbox.Add(self.remote_list, 1, wx.EXPAND)
 
         mask = wx.LIST_MASK_TEXT | wx.LIST_MASK_FORMAT
 
@@ -61,18 +66,14 @@ class MainWin(wx.Frame):
         self.work_queue_list.SetColumnWidth(2, 200)
         self.work_queue_list.SetColumnWidth(3, 100)
 
-        self.work_queue_lock = threading.Lock()
-        self.enqueue_work('hello src', '>>', 'hello dst')
-
         self.work_thread = threading.Thread(target=self.worker_func)
-        self.work_thread.start()
+        self.work_queue_lock = threading.Lock()
 
         hbox.Add(left_vbox, 3, wx.EXPAND)
         hbox.Add(middle_vbox, 1, wx.CENTER)
-        hbox.Add(self.remote_list, 3, wx.EXPAND)
+        hbox.Add(right_vbox, 3, wx.EXPAND)
         top_vbox.Add(sizer=hbox, proportion=2, flag=wx.EXPAND)
         top_vbox.Add(window=self.work_queue_list, proportion=1, flag=wx.EXPAND)
-        top_vbox.Add(window=self.log, proportion=1, flag=wx.EXPAND)
         panel.SetSizer(top_vbox)
         panel.Fit()
         self.Centre()
@@ -80,31 +81,48 @@ class MainWin(wx.Frame):
 
         self.Show(True)
 
+    #TODO: handle exceptions like upload failures
     def worker_func(self):
-        while True:
-            if self.work_queue_list.GetItemCount() > 0:
-                self.work_queue_lock.acquire()
-                self.work_queue_lock.release()
-                item = self.work_queue_list.GetItem(0, 3)
-                progress = item.GetWindow()
-                for i in range(0, 101, 20):
-                    progress.SetValue(i)
-                    time.sleep(1)
-                
-                self.work_queue_list.DeleteItem(0)
+        while self.work_queue_list.GetItemCount() > 0:
+            self.work_queue_lock.acquire()
+            self.work_queue_lock.release()
+
+            item = self.work_queue_list.GetItem(0, 3)
+            progress = item.GetWindow()
+
+            src_item = self.work_queue_list.GetItem(0, 0)
+            base_dir = src_item.GetText()
+            photo_pathes = []
+            for i in os.listdir(base_dir):
+                if self.is_img(i):
+                    photo_pathes.append(os.path.join(base_dir, i))
+
+            album_title = os.path.basename(base_dir)
+            album_id = mg.create_album(self.service, album_title)
+            upload_tokens = []
+            for i in range(len(photo_pathes)):
+                upload_tokens.append(mg.upload_img(album_title+'_', photo_pathes[i]))
+                progress.SetValue(100*(i+1)/len(photo_pathes))
+            mg.batch_create_media(self.service, upload_tokens, album_id)
+            
+            self.work_queue_list.DeleteItem(0)
+
+        self.sync_from_remote()
+
+    def is_img(self, path):
+        return path.lower().endswith('.jpg') or path.lower().endswith('.cr2')
 
     def is_img_dir(self, path):
         if not os.path.isdir(path):
             return False
 
         for i in os.listdir(path):
-            if i.lower().endswith('.jpg') or i.lower().endswith('.cr2'):
-                return True
+            if not self.is_img(i):
+                return False
 
-        return False
+        return True
 
     def sync_from_remote(self):
-        # wx.LogMessage('Sync..')
         albums = mg.list_albums(self.service)
         self.remote_list.DeleteAllItems()
         for album in albums:
@@ -112,7 +130,6 @@ class MainWin(wx.Frame):
             self.remote_list.SetItem(index, 1, '')
 
     def enqueue_work(self, src, direction, dst):
-        #get lock here
         self.work_queue_lock.acquire()
 
         index = self.work_queue_list.GetItemCount()
@@ -124,24 +141,29 @@ class MainWin(wx.Frame):
             100, -1), style=wx.GA_HORIZONTAL | wx.GA_SMOOTH)
         item.SetWindow(gauge)
         self.work_queue_list.SetItem(item)
-        
         self.work_queue_lock.release()
+
+        if not self.work_thread.is_alive():
+            self.work_thread = threading.Thread(target=self.worker_func)
+            self.work_thread.start()
+
+    def on_connect_remote(self, event):
+        self.statusbar.SetStatusText('Connecting...')
+        self.service = mg.Create_Service(mg.CLIENT_SECRET_FILE, mg.API_NAME, mg.API_VERSION, mg.SCOPES)
+        self.statusbar.SetStatusText('Synchronizing...')
+        self.sync_from_remote()
+        self.statusbar.SetStatusText('')
 
     def on_to_remote(self, event):
         index = self.local_list.GetFirstSelected()
         selected = []
         while index != -1:
-            selected.append(self.local_list.GetItemText(index, 1))
+            if self.local_list.GetItemText(index, 0) == 'V':
+                selected.append(self.local_list.GetItemText(index, 1))
             index = self.local_list.GetNextSelected(index)
-        wx.LogMessage(str(selected))
 
         for folder in selected:
-            wx.LogMessage(f'Enqueuing {folder}')
             self.enqueue_work(os.path.join(self.select_local_dir.Path, folder), '>>', folder)
-            # mg.upload_folder_as_album(self.service, folder)
-        # wx.LogMessage('Sync..')
-        # self.sync_from_remote()
-        # wx.LogMessage('Done')
 
     def on_set_local_dir(self, event):
         for i in os.listdir(event.Path):
@@ -154,5 +176,5 @@ class MainWin(wx.Frame):
                 self.local_list.SetItem(index, 2, str(len(os.listdir(i))))
 
 ex = wx.App()
-MainWin(None, 'Google Photo GUI')
+MainWin(None, 'Google Photo Explorer')
 ex.MainLoop()
