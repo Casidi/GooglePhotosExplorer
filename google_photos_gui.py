@@ -4,7 +4,6 @@ import wx
 from wx.lib.agw import ultimatelistctrl as ULC
 import mygoogle as mg
 
-##TODO: clear all threads when closing
 class MainWin(wx.Frame):
     def __init__(self, parent, title):
         super(MainWin, self).__init__(parent, title=title, size=(700, 400))
@@ -166,6 +165,7 @@ class MainWin(wx.Frame):
             self.enqueue_work(os.path.join(self.select_local_dir.Path, folder), '>>', folder)
 
     def on_set_local_dir(self, event):
+        self.local_list.DeleteAllItems()
         for i in os.listdir(event.Path):
             if self.is_img_dir(os.path.join(event.Path, i)):
                 index = self.local_list.InsertItem(0, 'V')
