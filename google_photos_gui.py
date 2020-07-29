@@ -18,7 +18,7 @@ class MainWin(wx.Frame):
         hbox = wx.BoxSizer(wx.HORIZONTAL)
 
         self.local_list = wx.ListCtrl(panel, -1, style=wx.LC_REPORT)
-        self.local_list.InsertColumn(0, 'Is img dir', width=20)
+        self.local_list.InsertColumn(0, 'Uploadable', width=20)
         self.local_list.InsertColumn(1, 'Name', wx.LIST_FORMAT_RIGHT, width=150)
         self.local_list.InsertColumn(2, '# photos', wx.LIST_FORMAT_RIGHT)
 
@@ -64,7 +64,7 @@ class MainWin(wx.Frame):
         self.work_queue_list.InsertColumnInfo(2, gen_column_header("Direction"))
         self.work_queue_list.InsertColumnInfo(3, gen_column_header("Remote"))
         self.work_queue_list.InsertColumnInfo(4, gen_column_header("Progress"))
-        self.work_queue_list.SetColumnWidth(0, 100)
+        self.work_queue_list.SetColumnWidth(0, 50)
         self.work_queue_list.SetColumnWidth(1, 200)
         self.work_queue_list.SetColumnWidth(2, 70)
         self.work_queue_list.SetColumnWidth(3, 200)
@@ -108,6 +108,10 @@ class MainWin(wx.Frame):
             elif item.GetText() == 'Image':
                 self.process_img_task()
 
+            self.work_queue_lock.acquire()
+            self.work_queue_list.DeleteItem(0)
+            self.work_queue_lock.release()
+
         self.sync_from_remote()
 
     def process_album_task(self):
@@ -128,9 +132,7 @@ class MainWin(wx.Frame):
             upload_tokens.append(mg.upload_img(album_title+'_', photo_pathes[i]))
             progress.SetValue(100*(i+1)/len(photo_pathes))
         mg.batch_create_media(self.service, upload_tokens, album_id)
-        
-        self.work_queue_list.DeleteItem(0)
-
+ 
     def process_img_task(self):
         item = self.get_work_queue_item_by_name(0, 'Progress')
         progress = item.GetWindow()
@@ -145,8 +147,6 @@ class MainWin(wx.Frame):
             upload_tokens.append(mg.upload_img('', photo_pathes[i]))
             progress.SetValue(100*(i+1)/len(photo_pathes))
         mg.batch_create_media(self.service, upload_tokens, album_id)
-        
-        self.work_queue_list.DeleteItem(0)
 
     def is_img(self, path):
         if not os.path.isfile(path):
@@ -236,13 +236,14 @@ class MainWin(wx.Frame):
         path = self.local_dir_tree.GetPath()
         self.local_list.DeleteAllItems()
         for i in os.listdir(path):
-            if self.is_img_dir(os.path.join(path, i)) or self.is_img(os.path.join(path, i)):
+            sub_item_path = os.path.join(path, i)
+            if self.is_img_dir(sub_item_path) or self.is_img(sub_item_path):
                 index = self.local_list.InsertItem(0, 'V')
             else:
                 index = self.local_list.InsertItem(0, '')
             self.local_list.SetItem(index, 1, i)
-            if os.path.isdir(i):
-                self.local_list.SetItem(index, 2, str(len(os.listdir(i))))
+            if os.path.isdir(sub_item_path):
+                self.local_list.SetItem(index, 2, str(len(os.listdir(sub_item_path))))
 
 ex = wx.App()
 MainWin(None, 'Google Photo Explorer')
