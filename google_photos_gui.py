@@ -1,5 +1,6 @@
 import os, time
 import threading
+import pathlib
 import wx
 from wx.lib.agw import ultimatelistctrl as ULC
 import mygoogle as mg
@@ -7,13 +8,14 @@ import mygoogle as mg
 class MainWin(wx.Frame):
     def __init__(self, parent, title):
         super(MainWin, self).__init__(parent, title=title, size=(700, 400))
+        self.Bind(wx.EVT_MAXIMIZE, self.on_maximize)
 
         self.statusbar = self.CreateStatusBar(1)
         self.statusbar.SetStatusText('Ready')
 
-        panel = wx.Panel(self)
+        self.splitter = wx.SplitterWindow(self, -1)
+        panel = wx.Panel(self.splitter)
         hbox = wx.BoxSizer(wx.HORIZONTAL)
-        top_vbox = wx.BoxSizer(wx.VERTICAL)
 
         self.local_list = wx.ListCtrl(panel, -1, style=wx.LC_REPORT)
         self.local_list.InsertColumn(0, 'Is img dir', width=20)
@@ -32,10 +34,11 @@ class MainWin(wx.Frame):
         middle_vbox.Add(self.to_remote, 0, wx.EXPAND|wx.TOP)
         middle_vbox.Add(self.to_local, 1, wx.EXPAND)
 
-        self.select_local_dir = wx.DirPickerCtrl(panel)
-        self.select_local_dir.Bind(wx.EVT_DIRPICKER_CHANGED, self.on_set_local_dir)
+        self.local_dir_tree = wx.GenericDirCtrl(panel, style=wx.DIRCTRL_DIR_ONLY)
+        self.local_dir_tree.Bind(wx.EVT_DIRCTRL_SELECTIONCHANGED, self.on_set_local_dir)
+        self.local_dir_tree.SetPath(str(pathlib.Path().home()))
         left_vbox = wx.BoxSizer(wx.VERTICAL)
-        left_vbox.Add(self.select_local_dir, 0, wx.EXPAND)
+        left_vbox.Add(self.local_dir_tree, 1, wx.EXPAND)
         left_vbox.Add(self.local_list, 1, wx.EXPAND)
 
         self.connect_remote_btn = wx.Button(panel, wx.ID_ANY, 'Connect')
@@ -55,7 +58,7 @@ class MainWin(wx.Frame):
             return info
 
         agw_style = (wx.LC_REPORT | wx.LC_SINGLE_SEL)
-        self.work_queue_list = ULC.UltimateListCtrl(panel, agwStyle=agw_style)
+        self.work_queue_list = ULC.UltimateListCtrl(self.splitter, agwStyle=agw_style)
         self.work_queue_list.InsertColumnInfo(0, gen_column_header("Local"))
         self.work_queue_list.InsertColumnInfo(1, gen_column_header("Direction"))
         self.work_queue_list.InsertColumnInfo(2, gen_column_header("Remote"))
@@ -71,10 +74,12 @@ class MainWin(wx.Frame):
         hbox.Add(left_vbox, 3, wx.EXPAND)
         hbox.Add(middle_vbox, 1, wx.CENTER)
         hbox.Add(right_vbox, 3, wx.EXPAND)
-        top_vbox.Add(sizer=hbox, proportion=2, flag=wx.EXPAND)
-        top_vbox.Add(window=self.work_queue_list, proportion=1, flag=wx.EXPAND)
-        panel.SetSizer(top_vbox)
-        panel.Fit()
+
+        panel.SetSizerAndFit(hbox)
+        self.splitter.SetSashGravity(0)
+        self.splitter.SetMinimumPaneSize(100)
+        self.splitter.SplitHorizontally(panel, self.work_queue_list)
+        
         self.Centre()
         self.SetIcon(wx.Icon('google-photos.ico'))
 
@@ -109,7 +114,9 @@ class MainWin(wx.Frame):
         self.sync_from_remote()
 
     def is_img(self, path):
-        return path.lower().endswith('.jpg') or path.lower().endswith('.cr2')
+        ext = os.path.splitext(path)[1]
+        ext = ext.lower()
+        return ext in ('.jpg', '.cr2', '.mp4')
 
     def is_img_dir(self, path):
         if not os.path.isdir(path):
@@ -146,6 +153,9 @@ class MainWin(wx.Frame):
             self.work_thread = threading.Thread(target=self.worker_func)
             self.work_thread.start()
 
+    def on_maximize(self, event):
+        self.splitter.SetSashPosition(self.Size.y - 200)
+
     def on_connect_remote(self, event):
         self.statusbar.SetStatusText('Connecting...')
         self.service = mg.Create_Service(mg.CLIENT_SECRET_FILE, mg.API_NAME, mg.API_VERSION, mg.SCOPES)
@@ -162,12 +172,13 @@ class MainWin(wx.Frame):
             index = self.local_list.GetNextSelected(index)
 
         for folder in selected:
-            self.enqueue_work(os.path.join(self.select_local_dir.Path, folder), '>>', folder)
+            self.enqueue_work(os.path.join(self.local_dir_tree.GetPath(), folder), '>>', folder)
 
     def on_set_local_dir(self, event):
+        path = self.local_dir_tree.GetPath()
         self.local_list.DeleteAllItems()
-        for i in os.listdir(event.Path):
-            if self.is_img_dir(os.path.join(event.Path, i)):
+        for i in os.listdir(path):
+            if self.is_img_dir(os.path.join(path, i)):
                 index = self.local_list.InsertItem(0, 'V')
             else:
                 index = self.local_list.InsertItem(0, '')
