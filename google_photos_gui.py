@@ -59,14 +59,16 @@ class MainWin(wx.Frame):
 
         agw_style = (wx.LC_REPORT | wx.LC_SINGLE_SEL)
         self.work_queue_list = ULC.UltimateListCtrl(self.splitter, agwStyle=agw_style)
-        self.work_queue_list.InsertColumnInfo(0, gen_column_header("Local"))
-        self.work_queue_list.InsertColumnInfo(1, gen_column_header("Direction"))
-        self.work_queue_list.InsertColumnInfo(2, gen_column_header("Remote"))
-        self.work_queue_list.InsertColumnInfo(3, gen_column_header("Progress"))
-        self.work_queue_list.SetColumnWidth(0, 200)
-        self.work_queue_list.SetColumnWidth(1, 70)
-        self.work_queue_list.SetColumnWidth(2, 200)
-        self.work_queue_list.SetColumnWidth(3, 100)
+        self.work_queue_list.InsertColumnInfo(0, gen_column_header("Type"))
+        self.work_queue_list.InsertColumnInfo(1, gen_column_header("Local"))
+        self.work_queue_list.InsertColumnInfo(2, gen_column_header("Direction"))
+        self.work_queue_list.InsertColumnInfo(3, gen_column_header("Remote"))
+        self.work_queue_list.InsertColumnInfo(4, gen_column_header("Progress"))
+        self.work_queue_list.SetColumnWidth(0, 100)
+        self.work_queue_list.SetColumnWidth(1, 200)
+        self.work_queue_list.SetColumnWidth(2, 70)
+        self.work_queue_list.SetColumnWidth(3, 200)
+        self.work_queue_list.SetColumnWidth(4, 100)
 
         self.work_thread = threading.Thread(target=self.worker_func)
         self.work_queue_lock = threading.Lock()
@@ -83,7 +85,16 @@ class MainWin(wx.Frame):
         self.Centre()
         self.SetIcon(wx.Icon('google-photos.ico'))
 
+        self.service = None
+
         self.Show(True)
+
+    def get_work_queue_item_by_name(self, index, col_name):
+        for i in range(self.work_queue_list.GetColumnCount()):
+            if self.work_queue_list.GetColumn(i).GetText() == col_name:
+                return self.work_queue_list.GetItem(index, i)
+
+        return None
 
     #TODO: handle exceptions like upload failures
     def worker_func(self):
@@ -91,29 +102,56 @@ class MainWin(wx.Frame):
             self.work_queue_lock.acquire()
             self.work_queue_lock.release()
 
-            item = self.work_queue_list.GetItem(0, 3)
-            progress = item.GetWindow()
-
-            src_item = self.work_queue_list.GetItem(0, 0)
-            base_dir = src_item.GetText()
-            photo_pathes = []
-            for i in os.listdir(base_dir):
-                if self.is_img(i):
-                    photo_pathes.append(os.path.join(base_dir, i))
-
-            album_title = os.path.basename(base_dir)
-            album_id = mg.create_album(self.service, album_title)
-            upload_tokens = []
-            for i in range(len(photo_pathes)):
-                upload_tokens.append(mg.upload_img(album_title+'_', photo_pathes[i]))
-                progress.SetValue(100*(i+1)/len(photo_pathes))
-            mg.batch_create_media(self.service, upload_tokens, album_id)
-            
-            self.work_queue_list.DeleteItem(0)
+            item = self.get_work_queue_item_by_name(0, 'Type')
+            if item.GetText() == 'Album':
+                self.process_album_task()
+            elif item.GetText() == 'Image':
+                self.process_img_task()
 
         self.sync_from_remote()
 
+    def process_album_task(self):
+        item = self.get_work_queue_item_by_name(0, 'Progress')
+        progress = item.GetWindow()
+
+        src_item = self.get_work_queue_item_by_name(0, 'Local')
+        base_dir = src_item.GetText()
+        photo_pathes = []
+        for i in os.listdir(base_dir):
+            if self.is_img(i):
+                photo_pathes.append(os.path.join(base_dir, i))
+
+        album_title = os.path.basename(base_dir)
+        album_id = mg.create_album(self.service, album_title)
+        upload_tokens = []
+        for i in range(len(photo_pathes)):
+            upload_tokens.append(mg.upload_img(album_title+'_', photo_pathes[i]))
+            progress.SetValue(100*(i+1)/len(photo_pathes))
+        mg.batch_create_media(self.service, upload_tokens, album_id)
+        
+        self.work_queue_list.DeleteItem(0)
+
+    def process_img_task(self):
+        item = self.get_work_queue_item_by_name(0, 'Progress')
+        progress = item.GetWindow()
+
+        src_item = self.get_work_queue_item_by_name(0, 'Local')
+        photo_pathes = [src_item.GetText()]
+
+        album_title = 'Default'
+        album_id = mg.create_album(self.service, album_title)
+        upload_tokens = []
+        for i in range(len(photo_pathes)):
+            upload_tokens.append(mg.upload_img('', photo_pathes[i]))
+            progress.SetValue(100*(i+1)/len(photo_pathes))
+        mg.batch_create_media(self.service, upload_tokens, album_id)
+        
+        self.work_queue_list.DeleteItem(0)
+
     def is_img(self, path):
+        if not os.path.isfile(path):
+            return False
+
         ext = os.path.splitext(path)[1]
         ext = ext.lower()
         return ext in ('.jpg', '.cr2', '.mp4')
@@ -123,7 +161,7 @@ class MainWin(wx.Frame):
             return False
 
         for i in os.listdir(path):
-            if not self.is_img(i):
+            if not self.is_img(os.path.join(path, i)):
                 return False
 
         return True
@@ -139,10 +177,19 @@ class MainWin(wx.Frame):
         self.work_queue_lock.acquire()
 
         index = self.work_queue_list.GetItemCount()
-        self.work_queue_list.InsertStringItem(index, src)
-        self.work_queue_list.SetStringItem(index, 1, direction)
-        self.work_queue_list.SetStringItem(index, 2, dst)
-        item = self.work_queue_list.GetItem(index, 3)
+
+        if self.is_img_dir(src):
+            self.work_queue_list.InsertStringItem(index, 'Album')
+        elif self.is_img(src):
+            self.work_queue_list.InsertStringItem(index, 'Image')
+        else:
+            self.work_queue_lock.release()
+            return
+
+        self.work_queue_list.SetStringItem(index, 1, src)
+        self.work_queue_list.SetStringItem(index, 2, direction)
+        self.work_queue_list.SetStringItem(index, 3, dst)
+        item = self.work_queue_list.GetItem(index, 4)
         gauge = wx.Gauge(self.work_queue_list, range=100, size=(
             100, -1), style=wx.GA_HORIZONTAL | wx.GA_SMOOTH)
         item.SetWindow(gauge)
@@ -164,12 +211,23 @@ class MainWin(wx.Frame):
         self.statusbar.SetStatusText('')
 
     def on_to_remote(self, event):
+        if self.service == None:
+            wx.MessageBox('Not connected', 'Info', wx.OK | wx.ICON_INFORMATION)
+            return
+        if self.local_list.GetFirstSelected() == -1:
+            wx.MessageBox('Please select at least one folder', 'Info', wx.OK | wx.ICON_INFORMATION)
+            return
+
         index = self.local_list.GetFirstSelected()
         selected = []
         while index != -1:
             if self.local_list.GetItemText(index, 0) == 'V':
                 selected.append(self.local_list.GetItemText(index, 1))
             index = self.local_list.GetNextSelected(index)
+
+        if len(selected) == 0:
+            wx.MessageBox('No uploadable item selected', 'Info', wx.OK | wx.ICON_INFORMATION)
+            return
 
         for folder in selected:
             self.enqueue_work(os.path.join(self.local_dir_tree.GetPath(), folder), '>>', folder)
@@ -178,7 +236,7 @@ class MainWin(wx.Frame):
         path = self.local_dir_tree.GetPath()
         self.local_list.DeleteAllItems()
         for i in os.listdir(path):
-            if self.is_img_dir(os.path.join(path, i)):
+            if self.is_img_dir(os.path.join(path, i)) or self.is_img(os.path.join(path, i)):
                 index = self.local_list.InsertItem(0, 'V')
             else:
                 index = self.local_list.InsertItem(0, '')
